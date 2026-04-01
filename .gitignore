@@ -1,0 +1,15 @@
+# Environments
+venv/
+env/
+__pycache__/
+
+# Secrets / API Keys
+.env
+
+# Large Files & ML Models
+models/*.pt
+data/
+
+# OS generated files
+.DS_Store
+Thumbs.db

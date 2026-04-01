@@ -1,0 +1,6 @@
+ultralytics==8.4.33
+streamlit
+openai
+python-dotenv
+opencv-python
+Pillow
