@@ -70,17 +70,35 @@ if uploaded_file and models_loaded:
             if "error" in report:
                 st.error(f"GPT-4o Error: {report['error']}")
             else:
-                score = report.get('compliance_score', 0)
-                color = "green" if score >= 80 else "orange" if score >= 50 else "red"
+                matrix = report.get('explainability_matrix', [])
                 
-                st.markdown(f"**Score:** :{color}[{score}/100] &nbsp;&nbsp;|&nbsp;&nbsp; **Status:** {report.get('status', 'Unknown')}")
+                # ── THE DETERMINISTIC OVERRIDE ──
+                # 1. We ignore the LLM's hallucinated score.
+                # 2. We calculate the true score by summing the point impacts in the matrix.
+                total_penalties = sum(item.get('point_impact', 0) for item in matrix)
+                true_score = max(0, 100 + total_penalties) # Ensures score doesn't drop below 0
+                
+                color = "green" if true_score >= 80 else "orange" if true_score >= 50 else "red"
+                
+                st.markdown(f"**Final Score:** :{color}[{true_score}/100] &nbsp;&nbsp;|&nbsp;&nbsp; **Status:** {report.get('status', 'Unknown')}")
                 st.markdown(f"**Summary:** {report.get('summary', '')}")
                 
-                issues = report.get('issues', [])
-                if issues:
-                    st.warning("**Identified Issues:**\n" + "\n".join([f"- {issue}" for issue in issues]))
+                # --- SHAP-LIKE EXPLAINABILITY UI ---
+                if matrix:
+                    st.divider()
+                    st.markdown("#### 🔍 Score Explainability (Penalty Matrix)")
+                    st.caption("Starting Base Score: 100")
+                    
+                    for item in matrix:
+                        col_text, col_score = st.columns([4, 1])
+                        with col_text:
+                            st.markdown(f"**{item.get('feature', 'Unknown')}** — {item.get('issue', '')}")
+                            st.caption(item.get('reasoning', ''))
+                        with col_score:
+                            st.metric(label="", value="", delta=item.get('point_impact', 0))
+                        st.write("---")
                 else:
-                    st.success("No compliance issues detected based on available elements.")
+                    st.success("No compliance issues detected. Perfect score!")
                     
                 with st.expander("View Raw JSON & Extracted Elements"):
                     st.json(report)
