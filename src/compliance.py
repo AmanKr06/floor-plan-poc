@@ -9,11 +9,42 @@ class ComplianceAnalyzer:
         # ── UPDATED STANDARDS: Tailored specifically for CubiCasa classes ──
         # Classes available: 'room', 'wall', 'door', 'window'
         self.brand_standards = """
-        ARCHITECTURAL LAYOUT STANDARDS v1.0
-        1. Egress/Accessibility: Every 'room' must have at least one 'door' located near or intersecting its boundaries.
-        2. Natural Light: Every 'room' must have at least one 'window' located near or intersecting its boundaries.
-        3. Structural Integrity: The floor plan must contain 'wall' elements to separate spaces.
-        4. Entryway: The total layout must contain at least 2 'door' elements (accounting for a main entrance and interior rooms).
+        
+        Detected element classes: 'zone', 'door', 'window', 'wall'
+
+        RULE 1 — Minimum zones required:
+        The floor plan must contain at least 4 distinct 'zone' elements.
+        These represent: kitchen, dining, counter/service, and restroom areas.
+        Flag if fewer than 5 zones are detected.
+
+        RULE 2 — Exit accessibility (Critical):
+        Every zone must have at least one 'door' element whose X,Y coordinates
+        are within 150 pixels of the zone boundary. A zone with no nearby door
+        is an accessibility violation. Minimum 2 doors required for the full layout.
+
+        RULE 3 — Natural light / ventilation:
+        At least 40% of detected zones must have a 'window' element within
+        200 pixels of their boundary. Zones with no nearby window should be flagged
+        as potentially non-compliant with ventilation requirements.
+
+        RULE 4 — Structural separation:
+        'wall' elements must be present to separate zones. If the total count of
+        wall elements is fewer than 3, flag as insufficient structural separation.
+
+        RULE 5 — Zone size distribution:
+        Using the Width and Height of each zone, check for balance.
+        One zone should not occupy more than 50% of the total detected zone area
+        (sum of all zone Width x Height). If it does, flag as disproportionate layout.
+
+        RULE 6 — Service access:
+        At least one 'door' must be positioned on the outer boundary of the layout
+        (X coordinate below 100 or above 90% of max X, or Y below 100 or above 90%
+        of max Y). This represents a public entrance. If absent, flag it.
+
+        VERDICT LOGIC:
+        - score 80-100 → status: "Pass"
+        - score 50-79  → status: "Review"
+        - score 0-49   → status: "Fail"
         """
 
     def analyze(self, detections):
