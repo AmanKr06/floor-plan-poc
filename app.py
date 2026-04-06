@@ -5,6 +5,14 @@ from PIL import Image
 from src.detector import FloorPlanDetector
 from src.visualizer import Visualizer
 from src.compliance import ComplianceAnalyzer
+from src.shap_explainer import (
+    extract_features,
+    run_shap,
+    render_waterfall_chart,
+    render_feature_table,
+    SHAP_AVAILABLE,
+)
+import pandas as pd
 
 st.set_page_config(layout="wide", page_title="Floor Plan POC", page_icon="🏢")
 
@@ -26,9 +34,135 @@ except Exception as e:
     st.error(f"Failed to load models: {e}")
     models_loaded = False
 
+def render_shap_section(detections: list, compliance_result: dict):
+    """
+    Stage 3: SHAP explainability section.
+    Call this after you've displayed the Stage 2 (GPT-4o) compliance results.
+
+    Args:
+        detections       — output of detector.extract_elements()
+        compliance_result — output of compliance.analyze()
+    """
+    st.divider()
+    st.markdown("### Stage 3 — SHAP Feature Explainability")
+    st.markdown(
+        "Shows *why* the compliance score is what it is — "
+        "which detected features pushed it up or down."
+    )
+
+    if not SHAP_AVAILABLE:
+        st.error(
+            "❌ SHAP not installed. Run:  `pip install shap matplotlib`  "
+            "then restart Streamlit."
+        )
+        return
+
+    if not detections:
+        st.warning("No detections to explain. Run YOLO detection first.")
+        return
+
+    # ── Extract numeric features from the YOLO detections ────────────────────
+    with st.spinner("Computing SHAP values..."):
+        features = extract_features(detections)
+        shap_result = run_shap(features)
+
+    if "error" in shap_result:
+        st.error(f"SHAP error: {shap_result['error']}")
+        return
+
+    # ── Layout: score card + feature table on the left, chart on the right ───
+    col_left, col_right = st.columns([1, 2])
+
+    with col_left:
+        score     = shap_result["predicted"]
+        base      = shap_result["base_value"]
+        score_clr = "#166534" if score >= 70 else ("#854D0E" if score >= 45 else "#991B1B")
+
+        st.markdown(f"""
+        <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;
+                    padding:16px 20px;margin-bottom:12px">
+            <div style="font-size:11px;color:#6B7280;margin-bottom:4px">
+                SHAP Feasibility Score
+            </div>
+            <div style="font-size:44px;font-weight:800;color:{score_clr};line-height:1">
+                {score:.0f}
+                <span style="font-size:18px;color:#9CA3AF">/100</span>
+            </div>
+            <div style="font-size:11px;color:#9CA3AF;margin-top:6px">
+                Base (avg floor plan): {base:.1f}
+            </div>
+            <div style="font-size:11px;color:#9CA3AF">
+                Score shift: {score - base:+.1f} points
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # Cross-reference with GPT-4o score
+        gpt_score = compliance_result.get("compliance_score")
+        if gpt_score is not None:
+            delta = score - gpt_score
+            st.markdown(
+                f"**GPT-4o score:** {gpt_score}/100  \n"
+                f"**SHAP score:** {score:.0f}/100  \n"
+                f"**Difference:** {delta:+.1f} pts"
+            )
+            if abs(delta) < 10:
+                st.success("✅ Scores broadly agree — high confidence in analysis")
+            else:
+                st.warning(
+                    "⚠️ Scores diverge by more than 10 pts. "
+                    "SHAP uses geometric proximity rules; GPT-4o uses semantic reasoning. "
+                    "Both views are useful."
+                )
+
+        # Feature value table
+        st.markdown("**Feature breakdown**")
+        table_rows = render_feature_table(features, shap_result["shap_values"])
+        df = pd.DataFrame(table_rows)
+
+        # Colour the Direction column
+        def colour_direction(val):
+            if "↑" in val:  return "color: #166534; font-weight: 600"
+            if "↓" in val:  return "color: #991B1B; font-weight: 600"
+            return "color: #6B7280"
+
+        st.dataframe(
+            df.style.map(colour_direction, subset=["Direction"]),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    with col_right:
+        # Waterfall chart
+        st.markdown("**Waterfall chart** — feature contributions to the score")
+        chart_bytes = render_waterfall_chart(shap_result)
+        st.image(chart_bytes, use_container_width=True)
+
+        # Narrative explanation
+        sv = shap_result["shap_values"]
+        feature_names = shap_result["feature_names"]
+        top_neg = [(feature_names[i], sv[i]) for i in range(len(sv)) if sv[i] < -1]
+        top_pos = [(feature_names[i], sv[i]) for i in range(len(sv)) if sv[i] > 1]
+
+        if top_neg or top_pos:
+            narrative_parts = []
+            if top_neg:
+                worst = min(top_neg, key=lambda x: x[1])
+                narrative_parts.append(
+                    f"The biggest score penalty came from **{worst[0].replace('_', ' ')}** "
+                    f"({worst[1]:.1f} pts)."
+                )
+            if top_pos:
+                best = max(top_pos, key=lambda x: x[1])
+                narrative_parts.append(
+                    f"The biggest positive contributor was **{best[0].replace('_', ' ')}** "
+                    f"(+{best[1]:.1f} pts)."
+                )
+            st.info("  ".join(narrative_parts))    
+
 # --- UI Layout ---
 st.title("🏢 Generic Floor Plan Analysis POC")
-st.markdown("**Stage 1:** YOLOv8 Structural Detection ➡️ **Stage 2:** GPT-4o Semantic Compliance")
+st.markdown("**Stage 1:** YOLOv8 Structural Detection ➡️ **Stage 2:** GPT-4o Semantic Compliance ➡️ **Stage 3:** SHAP Explainability")
 
 uploaded_file = st.file_uploader("Upload a floor plan image (PNG, JPG)", type=["png", "jpg", "jpeg"])
 
@@ -54,6 +188,10 @@ if uploaded_file and models_loaded:
             
             # Draw boxes using our Visualizer
             annotated_img = Visualizer.draw_bounding_boxes(temp_path, elements)
+            
+            # ── NEW: Save the annotated image so GPT-4o can read it ──
+            annotated_path = f"annotated_{uploaded_file.name}"
+            annotated_img.save(annotated_path)
 
         with col2:
             st.markdown("### Stage 1: YOLOv8 Detections")
@@ -62,8 +200,9 @@ if uploaded_file and models_loaded:
 
         # --- STAGE 2: GPT-4o ---
         if elements:
-            with st.spinner("Stage 2: GPT-4o analyzing compliance..."):
-                report = analyzer.analyze(elements)
+            with st.spinner("Stage 2: GPT-4o Vision analyzing compliance..."):
+                # ── NEW: Pass the annotated image to the analyzer ──
+                report = analyzer.analyze(elements, annotated_path)
 
             st.markdown("### Stage 2: Compliance Report")
             
@@ -107,6 +246,14 @@ if uploaded_file and models_loaded:
         else:
             st.warning("No elements detected to analyze. Check YOLO model confidence.")
 
-    # Cleanup temp file
+        # ── Stage 3: SHAP ────────────────────────
+        if elements:
+            render_shap_section(elements, report)
+
+    # Cleanup temp files
     if os.path.exists(temp_path):
         os.remove(temp_path)
+    
+    # NEW: Also clean up the annotated image we created for Vision!
+    if 'annotated_path' in locals() and os.path.exists(annotated_path):
+        os.remove(annotated_path)
