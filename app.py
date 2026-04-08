@@ -34,7 +34,7 @@ except Exception as e:
     st.error(f"Failed to load models: {e}")
     models_loaded = False
 
-def render_shap_section(detections: list, compliance_result: dict):
+def render_shap_section(detections: list, compliance_result: dict, true_score: int):
     """
     Stage 3: SHAP explainability section.
     Call this after you've displayed the Stage 2 (GPT-4o) compliance results.
@@ -44,10 +44,11 @@ def render_shap_section(detections: list, compliance_result: dict):
         compliance_result — output of compliance.analyze()
     """
     st.divider()
-    st.markdown("### Stage 3 — SHAP Feature Explainability")
+    # Change the header to explicitly call out XGBoost
+    st.markdown("### Stage 3 & 4 — XGBoost Prediction & SHAP Explainability")
     st.markdown(
-        "Shows *why* the compliance score is what it is — "
-        "which detected features pushed it up or down."
+        "**Stage 3:** XGBoost Meta-Model calculates the final feasibility score. \n"
+        "**Stage 4:** SHAP explains *why* XGBoost gave that score."
     )
 
     if not SHAP_AVAILABLE:
@@ -62,8 +63,9 @@ def render_shap_section(detections: list, compliance_result: dict):
         return
 
     # ── Extract numeric features from the YOLO detections ────────────────────
-    with st.spinner("Computing SHAP values..."):
-        features = extract_features(detections)
+    with st.spinner("Computing XGBoost + SHAP values..."):
+        # Pass the report and score to extract_features
+        features = extract_features(detections, compliance_result, true_score)
         shap_result = run_shap(features)
 
     if "error" in shap_result:
@@ -82,7 +84,7 @@ def render_shap_section(detections: list, compliance_result: dict):
         <div style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:12px;
                     padding:16px 20px;margin-bottom:12px">
             <div style="font-size:11px;color:#6B7280;margin-bottom:4px">
-                SHAP Feasibility Score
+                XGBoost Final Feasibility Score
             </div>
             <div style="font-size:44px;font-weight:800;color:{score_clr};line-height:1">
                 {score:.0f}
@@ -97,22 +99,20 @@ def render_shap_section(detections: list, compliance_result: dict):
         </div>
         """, unsafe_allow_html=True)
 
-        # Cross-reference with GPT-4o score
-        gpt_score = compliance_result.get("compliance_score")
-        if gpt_score is not None:
-            delta = score - gpt_score
+        # Cross-reference with the True GPT-4o score
+        if true_score is not None:
+            delta = score - true_score
             st.markdown(
-                f"**GPT-4o score:** {gpt_score}/100  \n"
-                f"**SHAP score:** {score:.0f}/100  \n"
+                f"**GPT-4o Visual Score:** {true_score}/100  \n"
+                f"**XGBoost Meta Score:** {score:.0f}/100  \n"
                 f"**Difference:** {delta:+.1f} pts"
             )
             if abs(delta) < 10:
-                st.success("✅ Scores broadly agree — high confidence in analysis")
+                st.success("✅ Models broadly agree — high confidence in analysis")
             else:
                 st.warning(
                     "⚠️ Scores diverge by more than 10 pts. "
-                    "SHAP uses geometric proximity rules; GPT-4o uses semantic reasoning. "
-                    "Both views are useful."
+                    "XGBoost is weighing the strict geometric rules against GPT-4o's semantic reasoning."
                 )
 
         # Feature value table
@@ -162,7 +162,7 @@ def render_shap_section(detections: list, compliance_result: dict):
 
 # --- UI Layout ---
 st.title("🏢 Generic Floor Plan Analysis POC")
-st.markdown("**Stage 1:** YOLOv8 Structural Detection ➡️ **Stage 2:** GPT-4o Semantic Compliance ➡️ **Stage 3:** SHAP Explainability")
+st.markdown("**Stage 1:** YOLOv8 Structural Detection ➡️ **Stage 2:** GPT-4o Semantic Compliance ➡️ **Stage 3:** XGBoost ➡️ **Stage 4:** SHAP Explainability")
 
 uploaded_file = st.file_uploader("Upload a floor plan image (PNG, JPG)", type=["png", "jpg", "jpeg"])
 
@@ -246,9 +246,9 @@ if uploaded_file and models_loaded:
         else:
             st.warning("No elements detected to analyze. Check YOLO model confidence.")
 
-        # ── Stage 3: SHAP ────────────────────────
-        if elements:
-            render_shap_section(elements, report)
+        # ── Stage 3 & 4: XGBoost & SHAP ────────────────────────
+        if elements and 'true_score' in locals():
+            render_shap_section(elements, report, true_score)
 
     # Cleanup temp files
     if os.path.exists(temp_path):
